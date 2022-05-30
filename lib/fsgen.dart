@@ -1,6 +1,6 @@
 import 'package:dartdoc/dartdoc.dart';
 import 'package:analyzer/dart/element/element.dart';
-import 'package:analyzer/src/dart/element/element.dart';
+// import 'package:analyzer/src/dart/element/element.dart';
 
 class Dependency {
   final Uri libraryUri;
@@ -25,6 +25,12 @@ class Dependency {
   }
 }
 
+class RenderParamsResult {
+  final String rendered;
+  final int namedIndex;
+  RenderParamsResult(this.rendered, [this.namedIndex = -1]);
+}
+
 class FsGenerator implements Generator {
   Dependency? dependency(
       LibraryElement? elementType, PackageGraph packageGraph) {
@@ -34,18 +40,35 @@ class FsGenerator implements Generator {
     return Dependency(elementType.source.uri, metadata!.name, metadata.version);
   }
 
-  String extractNamedParams(Iterable<ParameterElement> parameters) {
-    var positionalUntil = -1;
-    for (final p in parameters) {
-      positionalUntil += 1;
-      if (p.isNamed) {
-        break;
-      }
-    }
-    return positionalUntil != -1 && positionalUntil != parameters.length - 1? '[<NamedParams${positionalUntil != 0 ? '(fromIndex=$positionalUntil)' : ''}>] ' : '';
+  String isConst(bool isConst) {
+    return isConst ? '[<IsConst>] ' : '';
   }
-  String renderParams(Iterable<ParameterElement> parameters) {
-    return '(${parameters.isEmpty ? '' : parameters.map((e) => '${e.isRequiredNamed || e.isRequiredPositional ? '' : '?'}${e.name} : ${e is TypeParameterElementType ? "'":''}${e.type.element?.name ?? e.type.alias?.element.name ?? e.type.getDisplayString(withNullability: true)}').reduce((value, element) => '$value, $element')})';
+
+  String paramAttributes(bool isConst, int namedIndex) {
+    final a = isConst ? "[<IsConst>] " : "";
+    final b = namedIndex >= 0 ? '[<NamedParams${namedIndex != 0 ? '(fromIndex=$namedIndex)' : ''}>] ' : '';
+    return a + b;
+  }
+
+  RenderParamsResult renderParams(List<Parameter> parameters) {
+    String renderParam(ParameterElement e) {
+      return '${e.isOptional ? "?" : ""}${e.name} : ${e is TypeParameterElementType ? "'":''}${e.type.element?.name ?? e.type.alias?.element.name ?? e.type.getDisplayString(withNullability: true)}';
+    }
+
+    final parameterEls = parameters.map((e) => e.element!).toList();
+    // If there are optional positional params there should be no named params
+    if (parameterEls.any((element) => element.isOptionalPositional)) {
+      final required = parameterEls.where((e) => e.isRequiredPositional).map(renderParam);
+      final optional = parameterEls.where((e) => e.isOptionalPositional).map(renderParam);
+      return RenderParamsResult(required.followedBy(optional).join(", "));
+    }
+    else {
+      final positional = parameterEls.where((e) => e.isPositional).map(renderParam).toList();
+      final namedRequired = parameterEls.where((e) => e.isRequiredNamed).map(renderParam).toList();
+      final namedOptional = parameterEls.where((e) => e.isOptionalNamed).map(renderParam).toList();
+      final namedIndex = namedRequired.isNotEmpty || namedOptional.isNotEmpty ? positional.length : -1;
+      return RenderParamsResult(positional.followedBy(namedRequired).followedBy(namedOptional).join(", "), namedIndex);
+    }
   }
 
   String renderGenericArgs(Iterable<Element> genericParams) => genericParams
@@ -55,75 +78,101 @@ class FsGenerator implements Generator {
 
   @override
   Future<void> generate(PackageGraph packageGraph, FileWriter writer) async {
-    for (final package in packageGraph.packages) {
+    // print("Default: ${packageGraph.defaultPackageName}");
+
+    final packages = [packageGraph.defaultPackage]; //packageGraph.packages
+    final moduleName = "Flutter.Material";
+    final modulePath = "package:flutter/material.dart";
+    final fileFilter = "src/material";
+    final superClassFilter = "src/material";
+    final printAtEnd = "  interface Widget";
+
+    for (final package in packages) {
+
       var buffer = StringBuffer();
+      buffer.writeln('module rec $moduleName');
+      buffer.writeln();
+      buffer.writeln('let [<Literal>] private PATH = "$modulePath"');
+      buffer.writeln();
 
       for (final lib in package.libraries) {
-        if (!lib.isPublic) continue;
-        buffer.writeln('module rec ``${lib.name}``=');
-        final currentLibUri = lib.element.source.uri;
-        final dependencies = Set<Dependency>.identity();
-        for (final libEl in lib.element.importedLibraries) {
-          if (libEl.isPrivate) continue;
-          final dep = dependency(libEl, packageGraph);
-          if (dep != null && dep.libraryUri != currentLibUri) {
-            dependencies.add(dep);
-          }
-        }
+        if (!lib.isPublic || !lib.sourceFileName.contains(fileFilter) ) continue;
+
+        // final currentLibUri = lib.element.source.uri;
+        // final dependencies = Set<Dependency>.identity();
+        // for (final libEl in lib.element.importedLibraries) {
+        //   if (libEl.isPrivate) continue;
+        //   final dep = dependency(libEl, packageGraph);
+        //   if (dep != null && dep.libraryUri != currentLibUri) {
+        //     dependencies.add(dep);
+        //   }
+        // }
+
         for (final clazz in lib.classes) {
           if (!clazz.isCanonical) continue;
+          
+          final superClazz = (clazz.supertype?.isPublic ?? false) ? clazz.supertype : null;
+          if (superClazz == null || superClazz.name != superClassFilter) continue;
+
           final genericParams = clazz.typeParameters;
-          final renderedClassGenerics =
-              renderGenericArgs(genericParams.map((e) => e.element!));
+          final renderedClassGenerics = renderGenericArgs(genericParams.map((e) => e.element!));
           var headerPrinted = false;
           var moreThanHeader = false;
-          var defaultConstructor = clazz.unnamedConstructor;
-          final superClazz = (clazz.supertype?.isPublic ?? false) ? clazz.supertype : null;
-          final superGenerics = renderGenericArgs(
-              superClazz?.typeArguments.where((e) => e.type.element != null)
-                  .map((e) => e.type.element!) ?? []);
-          buffer.writeln('  [<ImportMember("$currentLibUri")>');
-          if (defaultConstructor != null) {
+
+          buffer.writeln('/// https://api.flutter.dev/flutter/material/${clazz.name}-class.html');
+          buffer.writeln('[<ImportMember("PATH")>');
+
+          var defCons = clazz.unnamedConstructor;
+          if (defCons != null) {
             headerPrinted = true;
-            final renderedParams = renderParams(defaultConstructor.parameters.map((e) => e.element!));
+            final renderedParams = renderParams(defCons.parameters);
             buffer.writeln(
-                '  type ${clazz.name}$renderedClassGenerics ${extractNamedParams(defaultConstructor.parameters.map((e) => e.element!))} $renderedParams =');
+                'type ${clazz.name}$renderedClassGenerics ${paramAttributes(defCons.isConst, renderedParams.namedIndex)}(${renderedParams.rendered}) =');
           }
-          if (superClazz != null) {
-            moreThanHeader = true;
-            final args = ((defaultConstructor?.element as ConstructorElementImpl?)?.superConstructor?.parameters.length ?? 0);
-            buffer.writeln('    inherit ${superClazz.name}$superGenerics(${args == 0 ? '' : List.generate(args, (_) => 'jsNative')
-                .reduce((value, element) => '$value, $element')})');
-          }
+
+          moreThanHeader = true;
+          // if (superClazz != null) {
+          //   moreThanHeader = true;
+          //   final superGenerics = renderGenericArgs(
+          //       superClazz?.typeArguments.where((e) => e.type.element != null)
+          //           .map((e) => e.type.element!) ?? []);
+          //   final args = ((defaultConstructor?.element as ConstructorElementImpl?)?.superConstructor?.parameters.length ?? 0);
+          //   buffer.writeln('  inherit ${superClazz.name}$superGenerics(${args == 0 ? '' : List.generate(args, (_) => 'nativeOnly')
+          //       .reduce((value, element) => '$value, $element')})');
+          // }
 
           if (!headerPrinted) {
             headerPrinted = true;
-            buffer.writeln('  type ${clazz.name}$renderedClassGenerics =');
-          }
-          for (final constructor in clazz.constructors
-              .where((element) => !element.isUnnamedConstructor)) {
-            if (!constructor.isCanonical) continue;
-            final renderedParams = renderParams(constructor.parameters.map((e) => e.element!));
-            moreThanHeader = true;
-            final treated = constructor.name.substring(clazz.name.length + 1);
-            buffer.writeln(
-                '    ${extractNamedParams(constructor.parameters.map((e) => e.element!))}${treated != 'new' ? 'static member' : ''} $treated$renderedParams : ${clazz.name}$renderedClassGenerics = jsNative');
-            //print('SDK? ${lib.isInSdk} - $package - ${package.packageMeta.version} - ${lib.element.source.uri} - $lib - $clazz - ${clazz.supertype ?? 'No super'} - $constructor');
+            buffer.writeln('type ${clazz.name}$renderedClassGenerics =');
           }
 
-          if (!moreThanHeader) {
-            buffer.writeln('    class end');
+          final namedConstructors = clazz.constructors.where((element) => !element.isUnnamedConstructor && element.isCanonical);
+          for (final cons in namedConstructors) {
+            final renderedParams = renderParams(cons.parameters);
+            moreThanHeader = true;
+            final treated = cons.name.substring(clazz.name.length + 1);
+            buffer.writeln(
+                '  ${paramAttributes(cons.isConst, renderedParams.namedIndex)}static member $treated(${renderedParams.rendered}): ${clazz.name}$renderedClassGenerics = nativeOnly'
+            );
+          }
+
+          if (printAtEnd != null) {
+            buffer.writeln('  interface Widget');
+
+          } else if (!moreThanHeader) {
+            buffer.writeln('  class end');
           }
           buffer.writeln();
         }
 
-        writer.write('${lib.hashCode}.fs', buffer.toString());
+        // print('$lib dependencies:');
+        // for (final d in dependencies) {
+        //   print(d);
+        // }
 
-        print('$lib dependencies:');
-        for (final d in dependencies) {
-          print(d);
-        }
-      }
+      } // for (final lib in package.libraries) {
+
+      writer.write('$moduleName.fs', buffer.toString());
     }
   }
 }
