@@ -8,7 +8,7 @@ in `lib/`, and example unit test in `test/`.
 From the package dir you want to generate your bindings for:
 
 ```
-dart run ../../../DartToFableBindings/bin/fsgen.dart \
+dart run ../DartToFableBindings/bin/fsgen.dart \
   --exclude 'dart:async,dart:collection,dart:convert,dart:core,dart:developer,dart:io,dart:isolate,dart:math,dart:typed_data,dart,dart:ffi,dart:html,dart:js,dart:js_util' \
   --show-progress  \
 #  --no-auto-include-dependencies  \

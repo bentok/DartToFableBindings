@@ -2,12 +2,12 @@ import 'package:analyzer/dart/element/nullability_suffix.dart';
 import 'package:dartdoc/dartdoc.dart';
 import 'package:analyzer/dart/element/element.dart';
 import 'package:analyzer/dart/element/type.dart';
-// import 'package:analyzer/src/dart/element/element.dart';
+import 'package:analyzer/src/dart/element/element.dart';
 
-const keywords = ['begin', 'end', 'of', 'to', 'delegate', 'exception', 'type', 'inherit', 'done',
-  'lazy', 'open', 'global', 'process', 'checked', 'fixed', 'mixin', 'override'];
+const keywords = ['begin', 'end', 'of', 'to', 'delegate', 'exception', 'type', 'inherit', 'interface', 'let', 'done',
+  'lazy', 'open', 'global', 'process', 'checked', 'fixed', 'mixin', 'override', 'public', 'private'];
 
-const moduleName = "scheduler";
+const moduleName = "material";
 const packageFilter = "flutter";
 final libraryFilter = "flutter/lib/$moduleName.dart";
 final defininingLibraryFilter = "flutter/lib/src/$moduleName";
@@ -214,6 +214,15 @@ class FsGenerator implements Generator {
     buffer.writeln();
   }
 
+  // For now just declare the mixin as if it were an interface
+  void generateMixin(StringBuffer buffer, Mixin mixin_) {    
+    buffer.writeln('/// $docUrl${mixin_.name}-mixin.html');
+    buffer.writeln('[<ImportMember("$modulePath")>]');
+    buffer.writeln('type ${mixin_.name} =');
+    buffer.writeln('  interface end');
+    buffer.writeln();
+  }
+
   void generateClass(StringBuffer buffer, Class class_) {    
     final parent = class_.supertype != null && class_.supertype!.isPublic ? class_.supertype : null;
     print("Generating bindings for class ${class_.name}${parent != null ? " : ${parent.name}" : ""}");
@@ -223,13 +232,13 @@ class FsGenerator implements Generator {
     var moreThanHeader = false;
 
     buffer.writeln('/// $docUrl${class_.name}-class.html');
-    buffer.writeln('[<ImportMember("$modulePath")>]');
+    buffer.writeln('[<ImportMember("$modulePath")${class_.isAbstract ? "; AbstractClass" : ""}>]');
 
-    if (class_.name == "Widget") {
-      buffer.writeln('type Widget =');
-      buffer.writeln('  interface end');
-      return;
-    }
+    // if (class_.name == "Widget") {
+    //   buffer.writeln('type Widget =');
+    //   buffer.writeln('  interface end');
+    //   return;
+    // }
 
     var defCons = class_.unnamedConstructor;
     if (defCons != null) {
@@ -240,14 +249,14 @@ class FsGenerator implements Generator {
 
       if (parent != null) {
         moreThanHeader = true;
-        if (parent.name.endsWith("Widget")) {
-          buffer.writeln('  interface Widget');
-        } else {
-          final superGenerics = renderGenericArgs(parent.typeArguments.map((e) => e.type));
-          // final args = ((cons?.element as ConstructorElementImpl?)?.superConstructor?.parameters.length ?? 0);
-          // final renderedArgs = args == 0 ? '' : List.generate(args, (_) => 'nativeOnly').reduce((value, element) => '$value, $element');
-          buffer.writeln('  inherit ${parent.name}$superGenerics()');
-        }
+        final superGenerics = renderGenericArgs(parent.typeArguments.map((e) => e.type));
+
+        final paramsSet = Set.from(defCons.parameters.map((e) => e.name));
+        final superParamEls = (defCons.element as ConstructorElementImpl?)?.superConstructor?.parameters.where((p) => p.isRequiredPositional || p.isRequiredNamed) ?? <ParameterElement>[];
+        final superParams = superParamEls.map((e) => paramsSet.contains(e.name) ? sanitize(e.name) : "nativeOnly");
+        // final superParams = defCons.parameters.where((e) => e.element?.isSuperFormal ?? false).map((e) => sanitize(e.name));
+
+        buffer.writeln('  inherit ${parent.name}$superGenerics(${superParams.join(", ")})');
       }
     }
 
@@ -260,7 +269,7 @@ class FsGenerator implements Generator {
     for (final cons in namedConstructors) {
       moreThanHeader = true;
       final renderedParams = renderParams(cons.parameters);
-      final treated = cons.name.substring(class_.name.length + 1);
+      final treated = sanitize(cons.name.substring(class_.name.length + 1));
       buffer.writeln(
           '  ${paramAttributes(cons.isConst, renderedParams.namedIndex)}static member $treated(${renderedParams.rendered}): ${class_.name}$renderedGenerics = nativeOnly'
       );
@@ -302,7 +311,7 @@ class FsGenerator implements Generator {
     final packages = packageGraph.packages;
     // final packages = [packageGraph.defaultPackage]; //packageGraph.packages
 
-    final functions = <ModelFunction>[];
+    final functions = <ModelFunctionTyped>[];
 
     for (final package in packages) {
       print("Package: ${package.name}");
@@ -332,19 +341,22 @@ class FsGenerator implements Generator {
         // handleDependencies(lib, packageGraph);
 
         for (final enum_ in lib.publicEnums) {
-          // print("Enum ${enum_.name}: defined by ${enum_.definingLibrary.sourceFileName}. Is public? ${enum_.isPublic}");
-          if (!libFilter(enum_.definingLibrary, defininingLibraryFilter) || !enum_.isPublic) continue;
+          if (!libFilter(enum_.definingLibrary, defininingLibraryFilter)) continue;
           generateEnum(buffer, enum_);
         }
 
-        for (final class_ in lib.classes) {
-          // print("Class ${class_.name}: defined by ${class_.definingLibrary.sourceFileName}. Is public? ${class_.isPublic}");
-          if (!libFilter(class_.definingLibrary, defininingLibraryFilter) || !class_.isPublic) continue;
+        for (final mixin_ in lib.publicMixins) {
+          if (!libFilter(mixin_.definingLibrary, defininingLibraryFilter)) continue;
+          generateMixin(buffer, mixin_);
+        }
+
+        for (final class_ in lib.publicClasses) {
+          if (!libFilter(class_.definingLibrary, defininingLibraryFilter)) continue;
           generateClass(buffer, class_);
         }
 
-        for (final fn in lib.functions) {
-          if (fn.definingLibrary != lib || !fn.isPublic) continue;
+        for (final fn in lib.publicFunctions) {
+          if (!libFilter(fn.definingLibrary, defininingLibraryFilter)) continue;
           functions.add(fn);            
         }
       }
